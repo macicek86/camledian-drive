@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Threading;
 using CamledianDrive.Services;
@@ -303,15 +304,29 @@ public partial class MainWindow : Window
     {
         try
         {
-            if (!string.IsNullOrWhiteSpace(Environment.ProcessPath))
+            var resource = System.Windows.Application.GetResourceStream(
+                new Uri("pack://application:,,,/Assets/camledian-drive-icon.png", UriKind.Absolute));
+
+            if (resource is not null)
             {
-                var icon = Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath);
-                if (icon is not null) return icon;
+                using var stream = resource.Stream;
+                using var bitmap = new Drawing.Bitmap(stream);
+                var hIcon = bitmap.GetHicon();
+
+                try
+                {
+                    using var temporary = Drawing.Icon.FromHandle(hIcon);
+                    return (Drawing.Icon)temporary.Clone();
+                }
+                finally
+                {
+                    DestroyIcon(hIcon);
+                }
             }
         }
         catch
         {
-            // Fall through to a system icon only if Windows cannot read the exe icon.
+            // Fall through to a system icon if the embedded artwork cannot be loaded.
         }
 
         return (Drawing.Icon)Drawing.SystemIcons.Application.Clone();
@@ -401,4 +416,8 @@ public partial class MainWindow : Window
         icon?.Dispose();
         _trayIcon = null;
     }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 }

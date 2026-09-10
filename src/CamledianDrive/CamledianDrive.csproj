@@ -9,4 +9,8 @@
     <RootNamespace>CamledianDrive</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\camledian-drive-icon.png" />
+  </ItemGroup>
 </Project>

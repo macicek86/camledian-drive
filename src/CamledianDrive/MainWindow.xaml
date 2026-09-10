@@ -2,101 +2,149 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Camledian Drive"
-        Height="560"
-        Width="430"
-        MinHeight="520"
-        MinWidth="400"
+        Height="690"
+        Width="470"
+        MinHeight="600"
+        MinWidth="410"
         WindowStartupLocation="CenterScreen"
         Background="#071F32">
     <Window.Resources>
         <SolidColorBrush x:Key="GoldBrush" Color="#F3C85B" />
         <SolidColorBrush x:Key="PanelBrush" Color="#0D2B43" />
+        <SolidColorBrush x:Key="MutedBrush" Color="#B9C6D0" />
+
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="White" />
             <Setter Property="FontFamily" Value="Segoe UI" />
         </Style>
+
         <Style TargetType="TextBox">
-            <Setter Property="Height" Value="38" />
+            <Setter Property="Height" Value="40" />
             <Setter Property="Padding" Value="10,7" />
             <Setter Property="FontSize" Value="14" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
+
         <Style TargetType="PasswordBox">
-            <Setter Property="Height" Value="38" />
+            <Setter Property="Height" Value="40" />
             <Setter Property="Padding" Value="10,7" />
             <Setter Property="FontSize" Value="14" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="PrimaryButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="46" />
+            <Setter Property="Background" Value="{StaticResource GoldBrush}" />
+            <Setter Property="Foreground" Value="#071F32" />
+            <Setter Property="BorderBrush" Value="{StaticResource GoldBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+
+        <Style x:Key="SecondaryButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="40" />
+            <Setter Property="Background" Value="#173C58" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#355E7A" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
         </Style>
     </Window.Resources>
 
-    <Grid Margin="28">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                  HorizontalScrollBarVisibility="Disabled">
+        <Grid Margin="28,24,28,24">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-        <StackPanel HorizontalAlignment="Center">
-            <Border Width="118" Height="118" CornerRadius="20" Background="#061827" Padding="8">
-                <Image Source="Assets/camledian-drive-icon.png" Stretch="Uniform" />
-            </Border>
-            <TextBlock Text="Camledian Drive"
-                       FontSize="30"
-                       FontWeight="SemiBold"
-                       Foreground="{StaticResource GoldBrush}"
-                       HorizontalAlignment="Center"
-                       Margin="0,12,0,0" />
-            <TextBlock Text="Soubory z Camledian Commanderu přímo v Průzkumníku"
-                       FontSize="12"
-                       HorizontalAlignment="Center"
-                       Margin="0,5,0,0"
-                       Opacity="0.75" />
-        </StackPanel>
-
-        <Border Grid.Row="1"
-                Background="{StaticResource PanelBrush}"
-                CornerRadius="14"
-                Padding="22"
-                Margin="0,24,0,20"
-                VerticalAlignment="Center">
-            <StackPanel>
-                <TextBlock Text="Uživatelské jméno" Margin="0,0,0,6" />
-                <TextBox x:Name="UsernameBox" Margin="0,0,0,14" />
-
-                <TextBlock Text="Heslo" Margin="0,0,0,6" />
-                <PasswordBox x:Name="PasswordBox" Margin="0,0,0,18" />
-
-                <Button x:Name="ConnectButton"
-                        Content="Připojit Camledian Drive"
-                        Height="44"
-                        FontWeight="SemiBold"
-                        Click="ConnectButton_Click" />
-
-                <Button x:Name="DisconnectButton"
-                        Content="Odpojit"
-                        Height="38"
-                        Margin="0,10,0,0"
-                        IsEnabled="False"
-                        Click="DisconnectButton_Click" />
-
-                <TextBlock x:Name="StatusText"
-                           Text="Nepřipojeno"
-                           Margin="0,16,0,0"
+            <StackPanel Grid.Row="0" HorizontalAlignment="Center">
+                <Border Width="108" Height="108" CornerRadius="20" Background="#061827" Padding="8">
+                    <Image Source="Assets/camledian-drive-icon.png" Stretch="Uniform" />
+                </Border>
+                <TextBlock Text="Camledian Drive"
+                           FontSize="30"
+                           FontWeight="SemiBold"
+                           Foreground="{StaticResource GoldBrush}"
                            HorizontalAlignment="Center"
-                           TextWrapping="Wrap"
+                           Margin="0,12,0,0" />
+                <TextBlock Text="Soubory z Camledian Commanderu přímo v Průzkumníku"
+                           FontSize="12"
+                           HorizontalAlignment="Center"
+                           Margin="0,5,0,0"
+                           Foreground="{StaticResource MutedBrush}"
                            TextAlignment="Center"
-                           Foreground="{StaticResource GoldBrush}" />
+                           TextWrapping="Wrap" />
             </StackPanel>
-        </Border>
 
-        <StackPanel Grid.Row="2" HorizontalAlignment="Center">
-            <TextBlock Text="Camledian Drive (X:)"
-                       HorizontalAlignment="Center"
-                       FontSize="11"
-                       Opacity="0.65" />
-            <TextBlock Text="Bezpečné spojení přes HTTPS"
-                       HorizontalAlignment="Center"
-                       Margin="0,4,0,0"
-                       FontSize="10"
-                       Opacity="0.45" />
-        </StackPanel>
-    </Grid>
+            <Border Grid.Row="1"
+                    Background="{StaticResource PanelBrush}"
+                    CornerRadius="14"
+                    Padding="22"
+                    Margin="0,22,0,18">
+                <StackPanel>
+                    <TextBlock Text="Uživatelské jméno" Margin="0,0,0,6" />
+                    <TextBox x:Name="UsernameBox" Margin="0,0,0,14" />
+
+                    <TextBlock Text="Heslo" Margin="0,0,0,6" />
+                    <PasswordBox x:Name="PasswordBox" Margin="0,0,0,18" />
+
+                    <Button x:Name="ConnectButton"
+                            Content="Připojit Camledian Drive"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Click="ConnectButton_Click" />
+
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="10" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Button x:Name="OpenDriveButton"
+                                Grid.Column="0"
+                                Content="Otevřít disk"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                IsEnabled="False"
+                                Click="OpenDriveButton_Click" />
+
+                        <Button x:Name="DisconnectButton"
+                                Grid.Column="2"
+                                Content="Odpojit"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                IsEnabled="False"
+                                Click="DisconnectButton_Click" />
+                    </Grid>
+
+                    <Border Margin="0,16,0,0"
+                            Padding="10"
+                            CornerRadius="8"
+                            Background="#082238">
+                        <TextBlock x:Name="StatusText"
+                                   Text="Nepřipojeno"
+                                   HorizontalAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   Foreground="{StaticResource GoldBrush}" />
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <StackPanel Grid.Row="2" HorizontalAlignment="Center">
+                <TextBlock Text="Camledian Drive (X:)"
+                           HorizontalAlignment="Center"
+                           FontSize="11"
+                           Foreground="{StaticResource MutedBrush}" />
+                <TextBlock Text="Bezpečné spojení přes HTTPS"
+                           HorizontalAlignment="Center"
+                           Margin="0,4,0,0"
+                           FontSize="10"
+                           Foreground="{StaticResource MutedBrush}"
+                           Opacity="0.7" />
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
 </Window>

@@ -68,20 +68,20 @@ public partial class MainWindow : Window
         {
             await _mountService.MountAsync(username, password);
             StatusText.Text = "Připojeno jako Camledian Drive (X:)";
-            DisconnectButton.IsEnabled = true;
-            ConnectButton.IsEnabled = false;
+            SetMountedState(true);
             OpenDrive();
         }
         catch (Exception ex)
         {
             StatusText.Text = ex.Message;
-            ConnectButton.IsEnabled = true;
-            DisconnectButton.IsEnabled = false;
+            SetMountedState(false);
         }
         finally
         {
             PasswordBox.Password = string.Empty;
-            SetBusy(false, keepConnectDisabled: await _mountService.IsMountedAsync());
+            var mounted = await _mountService.IsMountedAsync();
+            SetBusy(false, keepConnectDisabled: mounted);
+            SetMountedState(mounted);
         }
     }
 
@@ -94,17 +94,22 @@ public partial class MainWindow : Window
         {
             await _mountService.UnmountAsync();
             StatusText.Text = "Nepřipojeno";
-            DisconnectButton.IsEnabled = false;
-            ConnectButton.IsEnabled = true;
+            SetMountedState(false);
         }
         catch (Exception ex)
         {
             StatusText.Text = ex.Message;
+            SetMountedState(await _mountService.IsMountedAsync());
         }
         finally
         {
-            SetBusy(false);
+            SetBusy(false, keepConnectDisabled: await _mountService.IsMountedAsync());
         }
+    }
+
+    private void OpenDriveButton_Click(object sender, RoutedEventArgs e)
+    {
+        OpenDrive();
     }
 
     private static void OpenDrive()
@@ -123,16 +128,27 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SetMountedState(bool mounted)
+    {
+        ConnectButton.IsEnabled = !mounted;
+        DisconnectButton.IsEnabled = mounted;
+        OpenDriveButton.IsEnabled = mounted;
+    }
+
     private void SetBusy(bool busy, bool keepConnectDisabled = false)
     {
         UsernameBox.IsEnabled = !busy;
         PasswordBox.IsEnabled = !busy;
+
         if (busy)
         {
             ConnectButton.IsEnabled = false;
             DisconnectButton.IsEnabled = false;
+            OpenDriveButton.IsEnabled = false;
+            return;
         }
-        else if (!keepConnectDisabled)
+
+        if (!keepConnectDisabled)
         {
             ConnectButton.IsEnabled = true;
         }

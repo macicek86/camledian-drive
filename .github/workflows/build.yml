@@ -28,6 +28,41 @@ jobs:
       - name: Publish Windows x64
         run: dotnet publish src/CamledianDrive/CamledianDrive.csproj --configuration Release --runtime win-x64 --self-contained false --output artifacts/win-x64
 
+      - name: Bundle rclone
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'rclone.zip'
+          $extract = Join-Path $env:RUNNER_TEMP 'rclone'
+          Invoke-WebRequest 'https://downloads.rclone.org/rclone-current-windows-amd64.zip' -OutFile $zip
+          Expand-Archive $zip -DestinationPath $extract -Force
+
+          $rclone = Get-ChildItem $extract -Recurse -Filter 'rclone.exe' | Select-Object -First 1
+          if (-not $rclone) { throw 'rclone.exe nebyl ve staženém archivu nalezen.' }
+
+          New-Item 'artifacts/win-x64/tools' -ItemType Directory -Force | Out-Null
+          Copy-Item $rclone.FullName 'artifacts/win-x64/tools/rclone.exe'
+
+          $copying = Get-ChildItem $extract -Recurse -Filter 'COPYING' | Select-Object -First 1
+          if ($copying) {
+            Copy-Item $copying.FullName 'artifacts/win-x64/tools/rclone-LICENSE.txt'
+          }
+
+      - name: Bundle WinFsp installer
+        shell: pwsh
+        run: |
+          $headers = @{
+            'Accept' = 'application/vnd.github+json'
+            'User-Agent' = 'CamledianDrive-build'
+          }
+          $release = Invoke-RestMethod 'https://api.github.com/repos/winfsp/winfsp/releases/latest' -Headers $headers
+          $asset = $release.assets | Where-Object { $_.name -like 'winfsp-*.msi' } | Select-Object -First 1
+          if (-not $asset) { throw 'WinFsp MSI nebyl v posledním releasu nalezen.' }
+
+          New-Item 'artifacts/win-x64/dependencies' -ItemType Directory -Force | Out-Null
+          Invoke-WebRequest $asset.browser_download_url -OutFile 'artifacts/win-x64/dependencies/winfsp.msi'
+          Invoke-WebRequest 'https://raw.githubusercontent.com/winfsp/winfsp/master/License.txt' -OutFile 'artifacts/win-x64/dependencies/WinFsp-LICENSE.txt'
+          $release.tag_name | Out-File 'artifacts/win-x64/dependencies/WinFsp-version.txt' -Encoding utf8
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

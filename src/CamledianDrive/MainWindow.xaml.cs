@@ -24,6 +24,43 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!DependencyService.IsWinFspInstalled())
+        {
+            var answer = MessageBox.Show(
+                "Camledian Drive potřebuje systémový ovladač WinFsp. Instalátor je součástí balíčku. Chceš ho teď nainstalovat?",
+                "Camledian Drive – WinFsp",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information);
+
+            if (answer != MessageBoxResult.Yes)
+            {
+                StatusText.Text = "Bez WinFsp nelze virtuální disk připojit.";
+                return;
+            }
+
+            SetBusy(true);
+            StatusText.Text = "Instaluji WinFsp…";
+
+            try
+            {
+                await DependencyService.InstallBundledWinFspAsync();
+                if (!DependencyService.IsWinFspInstalled())
+                {
+                    StatusText.Text = "WinFsp byl nainstalován, ale zatím není dostupný. Zkus restartovat Camledian Drive nebo Windows.";
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = ex.Message;
+                return;
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+        }
+
         SetBusy(true);
         StatusText.Text = "Připojuji…";
 

@@ -3,14 +3,17 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CamledianDrive</AssemblyName>
     <RootNamespace>CamledianDrive</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\camledian-drive.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <Resource Include="Assets\camledian-drive-icon.png" />
+    <Resource Include="Assets\camledian-drive.ico" />
   </ItemGroup>
 </Project>

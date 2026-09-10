@@ -9,19 +9,30 @@ public sealed class RcloneMountService : IMountService
 {
     private const string WebDavEndpoint = "https://admin.camledian.art/webdav/";
     private const string DriveLetter = "X:";
+    private const string DriveRoot = @"X:\";
+
+    private static readonly string StateDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "CamledianDrive");
+    private static readonly string MountPidPath = Path.Combine(StateDirectory, "mount.pid");
+
     private readonly StringBuilder _recentErrors = new();
+    private readonly object _processGate = new();
     private Process? _mountProcess;
 
     public async Task MountAsync(string username, string password, CancellationToken cancellationToken = default)
     {
         if (await IsMountedAsync(cancellationToken)) return;
 
+        if (Directory.Exists(DriveRoot))
+        {
+            throw new InvalidOperationException(
+                "Písmeno X: už je ve Windows obsazené jiným diskem nebo mountem. Camledian Drive ho proto nemůže použít.");
+        }
+
         var rclone = ResolveRcloneExecutable();
         var obscuredPassword = await ObscurePasswordAsync(rclone, password, cancellationToken);
-        var cacheDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CamledianDrive",
-            "cache");
+        var cacheDir = Path.Combine(StateDirectory, "cache");
         Directory.CreateDirectory(cacheDir);
 
         _recentErrors.Clear();
@@ -40,7 +51,7 @@ public sealed class RcloneMountService : IMountService
         psi.ArgumentList.Add(DriveLetter);
         psi.ArgumentList.Add("--network-mode");
         psi.ArgumentList.Add("--volname");
-        psi.ArgumentList.Add("CamledianDrive");
+        psi.ArgumentList.Add("Camledian Drive");
         psi.ArgumentList.Add("--vfs-cache-mode");
         psi.ArgumentList.Add("full");
         psi.ArgumentList.Add("--vfs-cache-max-size");
@@ -54,8 +65,8 @@ public sealed class RcloneMountService : IMountService
         psi.ArgumentList.Add("--log-level");
         psi.ArgumentList.Add("INFO");
 
-        // Use backend environment variables so no WebDAV secret is written to
-        // rclone.conf or exposed in the command-line arguments.
+        // No plaintext WebDAV secret is written to rclone.conf or exposed in
+        // the long-running process command line.
         psi.Environment["RCLONE_WEBDAV_URL"] = WebDavEndpoint;
         psi.Environment["RCLONE_WEBDAV_VENDOR"] = "other";
         psi.Environment["RCLONE_WEBDAV_USER"] = username;
@@ -78,48 +89,324 @@ public sealed class RcloneMountService : IMountService
         {
             process.Dispose();
             throw new InvalidOperationException(
-                "Rclone nebyl nalezen. Nainstaluj rclone nebo vlož rclone.exe do složky tools vedle Camledian Drive.",
+                "Rclone nebyl nalezen v balíčku Camledian Drive.",
                 ex);
         }
 
-        _mountProcess = process;
+        AttachMountProcess(process, persistPid: true);
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        // Do not keep the unobscured password alive in this service.
         password = string.Empty;
-
-        await WaitForMountAsync(process, cancellationToken);
-    }
-
-    public Task UnmountAsync(CancellationToken cancellationToken = default)
-    {
-        var process = _mountProcess;
-        _mountProcess = null;
-
-        if (process is null) return Task.CompletedTask;
 
         try
         {
-            if (!process.HasExited)
+            await WaitForMountAsync(process, cancellationToken);
+        }
+        catch
+        {
+            try
             {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // The original mount error is more useful than cleanup failure.
+            }
+
+            ClearAttachedProcess(process.Id);
+            process.Dispose();
+            throw;
+        }
+    }
+
+    public async Task UnmountAsync(CancellationToken cancellationToken = default)
+    {
+        var process = GetAttachedLiveProcess();
+
+        if (process is null && Directory.Exists(DriveRoot))
+        {
+            TryAdoptExistingMount();
+            process = GetAttachedLiveProcess();
+        }
+
+        if (process is null)
+        {
+            DeleteStoredPid();
+
+            if (Directory.Exists(DriveRoot))
+            {
+                throw new InvalidOperationException(
+                    "Disk X: existuje, ale Camledian Drive nedokázal určit jeho rclone proces. Odpojení bylo raději zablokováno, aby nebyl ukončen cizí disk.");
+            }
+
+            return;
+        }
+
+        var pid = process.Id;
+        try
+        {
+            if (!process.HasExited)
                 process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Continue and verify whether WinFsp removed the mount anyway.
             }
         }
         finally
         {
+            ClearAttachedProcess(pid);
             process.Dispose();
         }
 
-        return Task.CompletedTask;
+        for (var i = 0; i < 30 && Directory.Exists(DriveRoot); i++)
+            await Task.Delay(100, cancellationToken);
+
+        if (Directory.Exists(DriveRoot))
+            throw new InvalidOperationException("Rclone byl ukončen, ale disk X: je ve Windows stále viditelný. Zkus chvíli počkat nebo restartovat Průzkumníka.");
     }
 
     public Task<bool> IsMountedAsync(CancellationToken cancellationToken = default)
     {
-        var process = _mountProcess;
-        var mounted = process is { HasExited: false } && Directory.Exists(@"X:\");
-        return Task.FromResult(mounted);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!Directory.Exists(DriveRoot))
+        {
+            CleanupDeadProcessReference();
+            return Task.FromResult(false);
+        }
+
+        if (GetAttachedLiveProcess() is not null)
+            return Task.FromResult(true);
+
+        return Task.FromResult(TryAdoptExistingMount());
+    }
+
+    private bool TryAdoptExistingMount()
+    {
+        if (!Directory.Exists(DriveRoot)) return false;
+
+        var storedPid = ReadStoredPid();
+        if (storedPid is int pid)
+        {
+            var storedProcess = TryOpenRcloneProcess(pid);
+            if (storedProcess is not null)
+            {
+                AttachMountProcess(storedProcess, persistPid: true);
+                return true;
+            }
+
+            DeleteStoredPid();
+        }
+
+        // Compatibility with the earlier prototype which did not persist PID:
+        // adopt only when exactly one rclone process exists, so we never guess
+        // among multiple unrelated rclone instances.
+        Process[] candidates;
+        try
+        {
+            candidates = Process.GetProcessesByName("rclone");
+        }
+        catch
+        {
+            return false;
+        }
+
+        var live = new List<Process>();
+        foreach (var candidate in candidates)
+        {
+            if (IsLiveRcloneProcess(candidate))
+                live.Add(candidate);
+            else
+                candidate.Dispose();
+        }
+
+        if (live.Count != 1)
+        {
+            foreach (var candidate in live)
+                candidate.Dispose();
+            return false;
+        }
+
+        AttachMountProcess(live[0], persistPid: true);
+        return true;
+    }
+
+    private void AttachMountProcess(Process process, bool persistPid)
+    {
+        lock (_processGate)
+        {
+            if (_mountProcess is not null && !ReferenceEquals(_mountProcess, process))
+            {
+                try { _mountProcess.Dispose(); } catch { }
+            }
+
+            _mountProcess = process;
+            process.EnableRaisingEvents = true;
+            process.Exited -= MountProcess_Exited;
+            process.Exited += MountProcess_Exited;
+
+            if (persistPid)
+                WriteStoredPid(process.Id);
+        }
+    }
+
+    private void MountProcess_Exited(object? sender, EventArgs e)
+    {
+        if (sender is not Process process) return;
+
+        try
+        {
+            ClearAttachedProcess(process.Id);
+        }
+        catch
+        {
+            DeleteStoredPid();
+        }
+    }
+
+    private Process? GetAttachedLiveProcess()
+    {
+        lock (_processGate)
+        {
+            if (_mountProcess is null) return null;
+
+            try
+            {
+                if (!_mountProcess.HasExited && IsLiveRcloneProcess(_mountProcess))
+                    return _mountProcess;
+            }
+            catch
+            {
+                // Treat an inaccessible/exited process as stale.
+            }
+
+            _mountProcess = null;
+            DeleteStoredPid();
+            return null;
+        }
+    }
+
+    private void CleanupDeadProcessReference()
+    {
+        lock (_processGate)
+        {
+            if (_mountProcess is null)
+            {
+                DeleteStoredPid();
+                return;
+            }
+
+            try
+            {
+                if (!_mountProcess.HasExited) return;
+            }
+            catch
+            {
+                // stale
+            }
+
+            try { _mountProcess.Dispose(); } catch { }
+            _mountProcess = null;
+            DeleteStoredPid();
+        }
+    }
+
+    private void ClearAttachedProcess(int pid)
+    {
+        lock (_processGate)
+        {
+            try
+            {
+                if (_mountProcess?.Id == pid)
+                    _mountProcess = null;
+            }
+            catch
+            {
+                _mountProcess = null;
+            }
+
+            var storedPid = ReadStoredPid();
+            if (storedPid == pid)
+                DeleteStoredPid();
+        }
+    }
+
+    private static Process? TryOpenRcloneProcess(int pid)
+    {
+        try
+        {
+            var process = Process.GetProcessById(pid);
+            if (IsLiveRcloneProcess(process)) return process;
+            process.Dispose();
+        }
+        catch
+        {
+            // Stale PID or process is no longer accessible.
+        }
+
+        return null;
+    }
+
+    private static bool IsLiveRcloneProcess(Process process)
+    {
+        try
+        {
+            return !process.HasExited
+                && string.Equals(process.ProcessName, "rclone", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void WriteStoredPid(int pid)
+    {
+        try
+        {
+            Directory.CreateDirectory(StateDirectory);
+            File.WriteAllText(MountPidPath, pid.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        catch
+        {
+            // PID persistence improves recovery but must not prevent mounting.
+        }
+    }
+
+    private static int? ReadStoredPid()
+    {
+        try
+        {
+            if (!File.Exists(MountPidPath)) return null;
+            var text = File.ReadAllText(MountPidPath).Trim();
+            return int.TryParse(text, out var pid) && pid > 0 ? pid : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void DeleteStoredPid()
+    {
+        try
+        {
+            if (File.Exists(MountPidPath)) File.Delete(MountPidPath);
+        }
+        catch
+        {
+            // Best effort only.
+        }
     }
 
     private async Task WaitForMountAsync(Process process, CancellationToken cancellationToken)
@@ -131,19 +418,16 @@ public sealed class RcloneMountService : IMountService
             if (process.HasExited)
             {
                 var details = GetRecentErrors();
-                _mountProcess = null;
-                process.Dispose();
                 throw new InvalidOperationException(
                     string.IsNullOrWhiteSpace(details)
-                        ? "Připojení skončilo dřív, než se disk vytvořil. Zkontroluj rclone, WinFsp a přihlašovací údaje."
+                        ? "Připojení skončilo dřív, než se disk vytvořil. Zkontroluj WinFsp a přihlašovací údaje."
                         : $"Připojení se nezdařilo: {details}");
             }
 
-            if (Directory.Exists(@"X:\")) return;
+            if (Directory.Exists(DriveRoot)) return;
             await Task.Delay(250, cancellationToken);
         }
 
-        await UnmountAsync(cancellationToken);
         throw new TimeoutException("Camledian Drive se nepodařilo připojit do 15 sekund.");
     }
 
@@ -171,9 +455,7 @@ public sealed class RcloneMountService : IMountService
         }
         catch (Win32Exception ex)
         {
-            throw new InvalidOperationException(
-                "Rclone nebyl nalezen. Nainstaluj rclone nebo vlož rclone.exe do složky tools vedle Camledian Drive.",
-                ex);
+            throw new InvalidOperationException("Rclone nebyl nalezen v balíčku Camledian Drive.", ex);
         }
 
         if (process is null)
@@ -227,7 +509,6 @@ public sealed class RcloneMountService : IMountService
 
     private static string Redact(string line)
     {
-        // Keep diagnostics useful while avoiding accidental credential echoes.
         return line
             .Replace("Authorization:", "Authorization: [redacted]", StringComparison.OrdinalIgnoreCase)
             .Trim();

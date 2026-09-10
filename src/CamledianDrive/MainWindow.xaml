@@ -2,9 +2,10 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Camledian Drive"
-        Height="690"
+        Icon="Assets/camledian-drive.ico"
+        Height="735"
         Width="470"
-        MinHeight="600"
+        MinHeight="620"
         MinWidth="410"
         WindowStartupLocation="CenterScreen"
         Background="#071F32">
@@ -90,7 +91,14 @@
                     <TextBox x:Name="UsernameBox" Margin="0,0,0,14" />
 
                     <TextBlock Text="Heslo" Margin="0,0,0,6" />
-                    <PasswordBox x:Name="PasswordBox" Margin="0,0,0,18" />
+                    <PasswordBox x:Name="PasswordBox" Margin="0,0,0,12" />
+
+                    <CheckBox x:Name="RememberCredentialsCheckBox"
+                              Content="Zapamatovat přihlášení v systému Windows"
+                              IsChecked="True"
+                              Foreground="{StaticResource MutedBrush}"
+                              Margin="0,0,0,18"
+                              Unchecked="RememberCredentialsCheckBox_Unchecked" />
 
                     <Button x:Name="ConnectButton"
                             Content="Připojit Camledian Drive"
@@ -124,7 +132,7 @@
                             CornerRadius="8"
                             Background="#082238">
                         <TextBlock x:Name="StatusText"
-                                   Text="Nepřipojeno"
+                                   Text="Zjišťuji stav…"
                                    HorizontalAlignment="Center"
                                    TextWrapping="Wrap"
                                    TextAlignment="Center"
@@ -144,6 +152,14 @@
                            FontSize="10"
                            Foreground="{StaticResource MutedBrush}"
                            Opacity="0.7" />
+                <TextBlock Text="Zavřením okna zůstane aplikace spuštěná v oznamovací oblasti."
+                           HorizontalAlignment="Center"
+                           Margin="0,8,0,0"
+                           FontSize="10"
+                           Foreground="{StaticResource MutedBrush}"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap"
+                           Opacity="0.65" />
             </StackPanel>
         </Grid>
     </ScrollViewer>

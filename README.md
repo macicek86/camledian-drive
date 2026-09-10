@@ -6,7 +6,8 @@ Default WebDAV endpoint: `https://admin.camledian.art/webdav/`
 
 ## What the first prototype does
 
-- native Windows WPF app on .NET 8
+- native Windows WPF app on .NET 10
+- framework-dependent build for fast development and testing
 - asks only for the WebDAV username and password
 - mounts Commander as `X:` through rclone + WinFsp
 - uses rclone's WebDAV backend directly without creating an `rclone.conf`
@@ -17,15 +18,16 @@ Default WebDAV endpoint: `https://admin.camledian.art/webdav/`
 - can disconnect the mount from the UI
 
 > This is an early prototype. Persistent credentials, tray mode, reconnect logic,
-> installer bundling, dependency verification and code signing are intentionally
-> left for the next iterations.
+> installer bundling, dependency verification, self-contained publishing and code
+> signing are intentionally left for the next iterations.
 
 ## Requirements for the prototype
 
 1. Windows 11
-2. WinFsp installed
-3. `rclone.exe` either available in `PATH` or placed in `tools/rclone.exe` next to the published app
-4. an enabled Camledian Commander WebDAV account
+2. .NET 10 Desktop Runtime installed
+3. WinFsp installed
+4. `rclone.exe` either available in `PATH` or placed in `tools/rclone.exe` next to the published app
+5. an enabled Camledian Commander WebDAV account
 
 Camledian Commander currently uses a dedicated WebDAV Basic account rather than the normal browser session. The client is intentionally designed around that boundary so the Commander server remains an independent service.
 
@@ -35,7 +37,7 @@ Camledian Commander currently uses a dedicated WebDAV Basic account rather than 
 dotnet build .\src\CamledianDrive\CamledianDrive.csproj -c Release
 ```
 
-GitHub Actions also builds and publishes a Windows x64 artifact on each push to `main`.
+GitHub Actions also builds and publishes a framework-dependent Windows x64 artifact on each push to `main`.
 
 ## Architecture
 

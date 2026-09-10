@@ -1,0 +1,35 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore src/CamledianDrive/CamledianDrive.csproj
+
+      - name: Build
+        run: dotnet build src/CamledianDrive/CamledianDrive.csproj --configuration Release --no-restore
+
+      - name: Publish Windows x64
+        run: dotnet publish src/CamledianDrive/CamledianDrive.csproj --configuration Release --runtime win-x64 --self-contained false --output artifacts/win-x64
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CamledianDrive-win-x64
+          path: artifacts/win-x64/

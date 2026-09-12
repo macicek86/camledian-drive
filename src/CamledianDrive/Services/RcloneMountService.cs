@@ -8,27 +8,39 @@ namespace CamledianDrive.Services;
 public sealed class RcloneMountService : IMountService
 {
     private const string WebDavEndpoint = "https://admin.camledian.art/webdav/";
-    private const string DriveLetter = "X:";
-    private const string DriveRoot = @"X:\";
 
     private static readonly string StateDirectory = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "CamledianDrive");
     private static readonly string MountPidPath = Path.Combine(StateDirectory, "mount.pid");
+    private static readonly string MountLetterPath = Path.Combine(StateDirectory, "mount.letter");
 
     private readonly StringBuilder _recentErrors = new();
     private readonly object _processGate = new();
     private Process? _mountProcess;
+    private string? _driveLetter;
+
+    public string? CurrentDriveLetter
+    {
+        get
+        {
+            lock (_processGate)
+                return _driveLetter is null ? null : $"{_driveLetter}:";
+        }
+    }
 
     public async Task MountAsync(string username, string password, CancellationToken cancellationToken = default)
     {
         if (await IsMountedAsync(cancellationToken)) return;
 
-        if (Directory.Exists(DriveRoot))
+        var driveLetter = ResolveFreeDriveLetter();
+        if (driveLetter is null)
         {
             throw new InvalidOperationException(
-                "Písmeno X: už je ve Windows obsazené jiným diskem nebo mountem. Camledian Drive ho proto nemůže použít.");
+                "Nenašlo se žádné volné písmeno disku pro připojení Camledian Drive.");
         }
+
+        var driveRoot = $"{driveLetter}:\\";
 
         var rclone = ResolveRcloneExecutable();
         var obscuredPassword = await ObscurePasswordAsync(rclone, password, cancellationToken);
@@ -48,7 +60,7 @@ public sealed class RcloneMountService : IMountService
 
         psi.ArgumentList.Add("mount");
         psi.ArgumentList.Add(":webdav:");
-        psi.ArgumentList.Add(DriveLetter);
+        psi.ArgumentList.Add($"{driveLetter}:");
         psi.ArgumentList.Add("--network-mode");
         psi.ArgumentList.Add("--volname");
         psi.ArgumentList.Add("Camledian Drive");
@@ -93,6 +105,9 @@ public sealed class RcloneMountService : IMountService
                 ex);
         }
 
+        lock (_processGate)
+            _driveLetter = driveLetter.ToString();
+
         AttachMountProcess(process, persistPid: true);
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
@@ -101,7 +116,7 @@ public sealed class RcloneMountService : IMountService
 
         try
         {
-            await WaitForMountAsync(process, cancellationToken);
+            await WaitForMountAsync(process, driveRoot, cancellationToken);
         }
         catch
         {
@@ -125,24 +140,28 @@ public sealed class RcloneMountService : IMountService
     {
         var process = GetAttachedLiveProcess();
 
-        if (process is null && Directory.Exists(DriveRoot))
-        {
-            TryAdoptExistingMount();
+        if (process is null && TryAdoptExistingMount())
             process = GetAttachedLiveProcess();
-        }
 
         if (process is null)
         {
+            var staleLetter = ReadStoredDriveLetter();
             DeleteStoredPid();
+            DeleteStoredDriveLetter();
 
-            if (Directory.Exists(DriveRoot))
+            if (staleLetter is not null && Directory.Exists($"{staleLetter}:\\"))
             {
                 throw new InvalidOperationException(
-                    "Disk X: existuje, ale Camledian Drive nedokázal určit jeho rclone proces. Odpojení bylo raději zablokováno, aby nebyl ukončen cizí disk.");
+                    $"Disk {staleLetter}: existuje, ale Camledian Drive nedokázal určit jeho rclone proces. Odpojení bylo raději zablokováno, aby nebyl ukončen cizí disk.");
             }
 
             return;
         }
+
+        string driveLetter;
+        lock (_processGate)
+            driveLetter = _driveLetter!;
+        var driveRoot = $"{driveLetter}:\\";
 
         var pid = process.Id;
         try
@@ -168,18 +187,22 @@ public sealed class RcloneMountService : IMountService
             process.Dispose();
         }
 
-        for (var i = 0; i < 30 && Directory.Exists(DriveRoot); i++)
+        for (var i = 0; i < 30 && Directory.Exists(driveRoot); i++)
             await Task.Delay(100, cancellationToken);
 
-        if (Directory.Exists(DriveRoot))
-            throw new InvalidOperationException("Rclone byl ukončen, ale disk X: je ve Windows stále viditelný. Zkus chvíli počkat nebo restartovat Průzkumníka.");
+        if (Directory.Exists(driveRoot))
+            throw new InvalidOperationException($"Rclone byl ukončen, ale disk {driveLetter}: je ve Windows stále viditelný. Zkus chvíli počkat nebo restartovat Průzkumníka.");
     }
 
     public Task<bool> IsMountedAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!Directory.Exists(DriveRoot))
+        string? attachedLetter;
+        lock (_processGate)
+            attachedLetter = _driveLetter;
+
+        if (attachedLetter is not null && !Directory.Exists($"{attachedLetter}:\\"))
         {
             CleanupDeadProcessReference();
             return Task.FromResult(false);
@@ -191,9 +214,42 @@ public sealed class RcloneMountService : IMountService
         return Task.FromResult(TryAdoptExistingMount());
     }
 
+    private static char? ResolveFreeDriveLetter()
+    {
+        foreach (var letter in CandidateDriveLetters())
+        {
+            if (!Directory.Exists($"{letter}:\\"))
+                return letter;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<char> CandidateDriveLetters()
+    {
+        yield return 'X';
+
+        for (var letter = 'Z'; letter >= 'D'; letter--)
+        {
+            if (letter != 'X')
+                yield return letter;
+        }
+    }
+
     private bool TryAdoptExistingMount()
     {
-        if (!Directory.Exists(DriveRoot)) return false;
+        // Missing letter file means either nothing was ever mounted, or this
+        // is an upgrade from a version that always used X: - fall back to
+        // that so an existing mount survives the update.
+        var storedLetter = ReadStoredDriveLetter() ?? "X";
+        var storedRoot = $"{storedLetter}:\\";
+
+        if (!Directory.Exists(storedRoot))
+        {
+            DeleteStoredPid();
+            DeleteStoredDriveLetter();
+            return false;
+        }
 
         var storedPid = ReadStoredPid();
         if (storedPid is int pid)
@@ -201,6 +257,9 @@ public sealed class RcloneMountService : IMountService
             var storedProcess = TryOpenRcloneProcess(pid);
             if (storedProcess is not null)
             {
+                lock (_processGate)
+                    _driveLetter = storedLetter;
+
                 AttachMountProcess(storedProcess, persistPid: true);
                 return true;
             }
@@ -237,6 +296,9 @@ public sealed class RcloneMountService : IMountService
             return false;
         }
 
+        lock (_processGate)
+            _driveLetter = storedLetter;
+
         AttachMountProcess(live[0], persistPid: true);
         return true;
     }
@@ -256,7 +318,11 @@ public sealed class RcloneMountService : IMountService
             process.Exited += MountProcess_Exited;
 
             if (persistPid)
+            {
                 WriteStoredPid(process.Id);
+                if (_driveLetter is not null)
+                    WriteStoredDriveLetter(_driveLetter);
+            }
         }
     }
 
@@ -271,6 +337,7 @@ public sealed class RcloneMountService : IMountService
         catch
         {
             DeleteStoredPid();
+            DeleteStoredDriveLetter();
         }
     }
 
@@ -291,7 +358,9 @@ public sealed class RcloneMountService : IMountService
             }
 
             _mountProcess = null;
+            _driveLetter = null;
             DeleteStoredPid();
+            DeleteStoredDriveLetter();
             return null;
         }
     }
@@ -302,7 +371,9 @@ public sealed class RcloneMountService : IMountService
         {
             if (_mountProcess is null)
             {
+                _driveLetter = null;
                 DeleteStoredPid();
+                DeleteStoredDriveLetter();
                 return;
             }
 
@@ -317,7 +388,9 @@ public sealed class RcloneMountService : IMountService
 
             try { _mountProcess.Dispose(); } catch { }
             _mountProcess = null;
+            _driveLetter = null;
             DeleteStoredPid();
+            DeleteStoredDriveLetter();
         }
     }
 
@@ -328,16 +401,23 @@ public sealed class RcloneMountService : IMountService
             try
             {
                 if (_mountProcess?.Id == pid)
+                {
                     _mountProcess = null;
+                    _driveLetter = null;
+                }
             }
             catch
             {
                 _mountProcess = null;
+                _driveLetter = null;
             }
 
             var storedPid = ReadStoredPid();
             if (storedPid == pid)
+            {
                 DeleteStoredPid();
+                DeleteStoredDriveLetter();
+            }
         }
     }
 
@@ -409,7 +489,46 @@ public sealed class RcloneMountService : IMountService
         }
     }
 
-    private async Task WaitForMountAsync(Process process, CancellationToken cancellationToken)
+    private static void WriteStoredDriveLetter(string letter)
+    {
+        try
+        {
+            Directory.CreateDirectory(StateDirectory);
+            File.WriteAllText(MountLetterPath, letter);
+        }
+        catch
+        {
+            // Letter persistence improves recovery but must not prevent mounting.
+        }
+    }
+
+    private static string? ReadStoredDriveLetter()
+    {
+        try
+        {
+            if (!File.Exists(MountLetterPath)) return null;
+            var text = File.ReadAllText(MountLetterPath).Trim().ToUpperInvariant();
+            return text.Length == 1 && text[0] is >= 'A' and <= 'Z' ? text : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void DeleteStoredDriveLetter()
+    {
+        try
+        {
+            if (File.Exists(MountLetterPath)) File.Delete(MountLetterPath);
+        }
+        catch
+        {
+            // Best effort only.
+        }
+    }
+
+    private async Task WaitForMountAsync(Process process, string driveRoot, CancellationToken cancellationToken)
     {
         for (var i = 0; i < 60; i++)
         {
@@ -424,7 +543,7 @@ public sealed class RcloneMountService : IMountService
                         : $"Připojení se nezdařilo: {details}");
             }
 
-            if (Directory.Exists(DriveRoot)) return;
+            if (Directory.Exists(driveRoot)) return;
             await Task.Delay(250, cancellationToken);
         }
 

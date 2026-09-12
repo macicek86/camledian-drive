@@ -26,6 +26,8 @@ public partial class MainWindow : Window
         InitializeComponent();
         InitializeTrayIcon();
 
+        MaxHeight = SystemParameters.WorkArea.Height;
+
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
 
@@ -127,7 +129,7 @@ public partial class MainWindow : Window
                 }
                 catch (Exception ex)
                 {
-                    StatusText.Text = $"Připojeno jako Camledian Drive (X:), ale přihlášení se nepodařilo uložit: {ex.Message}";
+                    StatusText.Text = $"Připojeno jako Camledian Drive ({DriveLetterOrFallback()}), ale přihlášení se nepodařilo uložit: {ex.Message}";
                     OpenDrive();
                     return;
                 }
@@ -138,7 +140,7 @@ public partial class MainWindow : Window
                 PasswordBox.Password = string.Empty;
             }
 
-            StatusText.Text = "Připojeno jako Camledian Drive (X:)";
+            StatusText.Text = $"Připojeno jako Camledian Drive ({DriveLetterOrFallback()})";
             OpenDrive();
         }
         catch (Exception ex)
@@ -216,18 +218,23 @@ public partial class MainWindow : Window
         if (forceStatusText || changed)
         {
             StatusText.Text = mounted
-                ? "Připojeno jako Camledian Drive (X:)"
+                ? $"Připojeno jako Camledian Drive ({DriveLetterOrFallback()})"
                 : "Nepřipojeno";
         }
     }
 
-    private static void OpenDrive()
+    private string DriveLetterOrFallback() => _mountService.CurrentDriveLetter ?? "X:";
+
+    private void OpenDrive()
     {
+        var driveLetter = _mountService.CurrentDriveLetter;
+        if (driveLetter is null) return;
+
         try
         {
             Process.Start(new ProcessStartInfo
             {
-                FileName = @"X:\",
+                FileName = $@"{driveLetter}\",
                 UseShellExecute = true
             });
         }
@@ -270,7 +277,7 @@ public partial class MainWindow : Window
         showItem.Click += (_, _) => ShowFromTray();
         menu.Items.Add(showItem);
 
-        _trayOpenDriveItem = new WinForms.ToolStripMenuItem("Otevřít disk X:")
+        _trayOpenDriveItem = new WinForms.ToolStripMenuItem("Otevřít disk")
         {
             Enabled = false
         };
@@ -305,12 +312,19 @@ public partial class MainWindow : Window
         try
         {
             var resource = System.Windows.Application.GetResourceStream(
-                new Uri("pack://application:,,,/Assets/camledian-drive-icon.png", UriKind.Absolute));
+                new Uri("pack://application:,,,/Assets/ikona-tray.png", UriKind.Absolute));
 
             if (resource is not null)
             {
                 using var stream = resource.Stream;
-                using var bitmap = new Drawing.Bitmap(stream);
+                using var source = new Drawing.Bitmap(stream);
+                using var bitmap = new Drawing.Bitmap(32, 32);
+                using (var graphics = Drawing.Graphics.FromImage(bitmap))
+                {
+                    graphics.InterpolationMode = Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    graphics.DrawImage(source, 0, 0, 32, 32);
+                }
+
                 var hIcon = bitmap.GetHicon();
 
                 try
@@ -337,13 +351,19 @@ public partial class MainWindow : Window
         if (_trayIcon is null) return;
 
         _trayIcon.Text = mounted
-            ? "Camledian Drive – připojeno (X:)"
+            ? $"Camledian Drive – připojeno ({DriveLetterOrFallback()})"
             : "Camledian Drive – nepřipojeno";
 
         if (_trayOpenDriveItem is not null)
+        {
+            _trayOpenDriveItem.Text = mounted ? $"Otevřít disk {DriveLetterOrFallback()}" : "Otevřít disk";
             _trayOpenDriveItem.Enabled = mounted;
+        }
+
         if (_trayDisconnectItem is not null)
             _trayDisconnectItem.Enabled = mounted && !_isBusy;
+
+        DriveLabelText.Text = mounted ? $"Camledian Drive ({DriveLetterOrFallback()})" : "Camledian Drive";
     }
 
     private void ShowFromTray()
@@ -356,6 +376,8 @@ public partial class MainWindow : Window
         Topmost = false;
         Focus();
     }
+
+    public void BringToForeground() => ShowFromTray();
 
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {

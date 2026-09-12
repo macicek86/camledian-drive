@@ -68,3 +68,25 @@ jobs:
         with:
           name: CamledianDrive-win-x64
           path: artifacts/win-x64/
+
+      - name: Compute installer version
+        id: version
+        shell: pwsh
+        run: echo "value=1.0.$env:GITHUB_RUN_NUMBER" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+        shell: pwsh
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          iscc installer\CamledianDrive.iss `
+            "/DAppVersion=${{ steps.version.outputs.value }}" `
+            "/DSourceDir=$(Resolve-Path artifacts\win-x64)"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CamledianDrive-Setup-win-x64
+          path: artifacts/installer/*.exe

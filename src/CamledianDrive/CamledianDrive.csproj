@@ -9,6 +9,7 @@
     <AssemblyName>CamledianDrive</AssemblyName>
     <RootNamespace>CamledianDrive</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\ikona-tray.ico</ApplicationIcon>
     <!-- DPI awareness is declared in app.manifest, which is correct for this
          WPF app; the WinForms analyzer doesn't recognize that and suggests an
          API that only applies to pure WinForms apps. -->

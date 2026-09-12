@@ -13,6 +13,7 @@ Default WebDAV endpoint: `https://admin.camledian.art/webdav/`
 - GitHub Actions downloads and bundles the current official Windows x64 rclone build
 - GitHub Actions also bundles the current official WinFsp MSI installer
 - when WinFsp is missing, Camledian Drive offers to install the bundled MSI with UAC elevation
+- GitHub Actions also builds a Windows installer (Inno Setup) that installs WinFsp and, if missing, the .NET Desktop Runtime, so a plain double-click setup is enough
 - uses rclone's WebDAV backend directly without creating an `rclone.conf`
 - sends the plaintext password to `rclone obscure -` through STDIN rather than a process argument
 - passes only the obscured password to the long-running mount process
@@ -20,17 +21,15 @@ Default WebDAV endpoint: `https://admin.camledian.art/webdav/`
 - opens the mounted drive in File Explorer after a successful mount
 - can disconnect the mount from the UI
 
-> This is an early prototype. Persistent credentials, tray mode, reconnect logic,
-> a polished installer, self-contained publishing and code signing are intentionally
-> left for the next iterations.
+> This is an early prototype. Self-contained publishing and code signing are
+> intentionally left for the next iterations.
 
 ## Requirements for the prototype
 
 1. Windows 11
-2. .NET 10 Desktop Runtime installed
-3. an enabled Camledian Commander WebDAV account
+2. an enabled Camledian Commander WebDAV account
 
-`rclone.exe` and the WinFsp installer are included in GitHub Actions build artifacts, so testers do not need to download them separately. WinFsp still needs to be installed into Windows because it is the filesystem driver used by rclone mount.
+Using the `CamledianDrive-Setup-win-x64` installer build, the .NET Desktop Runtime and WinFsp are installed automatically if missing. The portable `CamledianDrive-win-x64` build still requires the .NET 10 Desktop Runtime to already be installed; `rclone.exe` and the WinFsp installer are bundled either way, so testers do not need to download them separately.
 
 Camledian Commander currently uses a dedicated WebDAV Basic account rather than the normal browser session. The client is intentionally designed around that boundary so the Commander server remains an independent service.
 
@@ -40,7 +39,7 @@ Camledian Commander currently uses a dedicated WebDAV Basic account rather than 
 dotnet build .\src\CamledianDrive\CamledianDrive.csproj -c Release
 ```
 
-GitHub Actions builds and publishes a framework-dependent Windows x64 artifact on each push to `main`, including rclone and the WinFsp installer.
+GitHub Actions builds and publishes a framework-dependent Windows x64 artifact on each push to `main`, including rclone and the WinFsp installer, plus an Inno Setup installer built from that same output (see [`installer/CamledianDrive.iss`](installer/CamledianDrive.iss)).
 
 ## Architecture
 

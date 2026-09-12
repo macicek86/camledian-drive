@@ -2,6 +2,8 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Threading;
 using CamledianDrive.Services;
 using Drawing = System.Drawing;
@@ -28,6 +30,8 @@ public partial class MainWindow : Window
 
         MaxHeight = SystemParameters.WorkArea.Height;
 
+        SourceInitialized += (_, _) => UpdateMaxSizeForCurrentScreen();
+        LocationChanged += (_, _) => UpdateMaxSizeForCurrentScreen();
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
 
@@ -36,6 +40,18 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromSeconds(3)
         };
         _stateTimer.Tick += StateTimer_Tick;
+    }
+
+    private void UpdateMaxSizeForCurrentScreen()
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero) return;
+
+        var workingArea = WinForms.Screen.FromHandle(handle).WorkingArea;
+        var dpi = VisualTreeHelper.GetDpi(this);
+
+        MaxWidth = workingArea.Width / dpi.DpiScaleX;
+        MaxHeight = workingArea.Height / dpi.DpiScaleY;
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)

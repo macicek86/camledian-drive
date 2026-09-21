@@ -4,6 +4,21 @@
 read/write files. Explorer's successful copy means the local write completed,
 not that Commander accepted it. Do not solve this by blindly disabling caching.
 
+## Preventing phantom files
+
+The bundled engine now checks the authenticated directory `DAV:isreadonly`
+property before Create, write Open and destination Rename. It is explicitly
+enabled with `--webdav-vfs-write-guard` while full caching stays enabled. See
+[the pinned engine patch](../vendor/rclone/README.md) for build and maintenance.
+New writes to the order root fail before they appear in Explorer. The tray
+monitor remains necessary for later upload failures (network loss, quotas, etc.).
+Commander must already advertise `isreadonly` (Commander commit `67c173e1`).
+A newly checked directory requires a server connection; this is not a promise
+of unrestricted offline creation. Already open authorized editor handles keep
+using full caching. Failed files left by the older client are preserved.
+
+## Upload state
+
 The client starts rclone RC on a random IPv4 loopback port, with a fresh random
 password passed only through the process environment. It does not enable the
 web GUI, remote file serving, or unauthenticated RC. The RC password and identity
@@ -46,17 +61,21 @@ Real-engine smoke test: `python tests/rclone-writeback-smoke.py /path/to/rclone`
 It uses rclone's WebDAV server over the same full VFS cache, a disposable backend,
 and authenticated RC. It reproduces an initially successful local PUT followed
 by a server 403 and a visible queued retry, then checks that a valid upload drains
-the queue. No production data or Windows mount is used. CI runs it with the
-bundled Windows rclone; Linux validation used rclone v1.75.1.
+the queue. No production data is used. CI runs it with the bundled Windows rclone,
+then repeats the guarded scenario with `--guard`, and with `--guard --mount`
+on an actual WinFsp drive. The mount scenario covers denied create and rename,
+source preservation, full-cache uploads, seek/read/write editor saves and valid
+renames. Linux uses the same guarded VFS through rclone's WebDAV server.
 
 Manual Windows QA (not replaced by cross-compilation or this smoke test):
 
 1. Connect with the new client, copy a disposable file beside `zakazka.txt`.
-   Explorer may initially show success; after the rejected upload, verify the
-   app's persistent warning names the file and suggests `Interní`. Verify one
-   tray notification, without repeating it on each retry.
-2. Move that disposable cached file into `Interní`; verify it can be downloaded
-   from the admin and the warning clears once the queue drains.
+   Explorer must reject the write immediately, with no new file in the listing
+   or upload queue. Test both a local copy and a move from Interní; a rejected
+   move must preserve its source.
+2. Upload into `Interní`, open the file in an editor, modify and save it; verify
+   the server content and an empty upload queue. Also test temporary-file save
+   followed by rename within Interní.
 3. Disconnect while uploading a disposable large file. Choose No: the mount
    stays alive. Repeat and explicitly choose Yes: the app explains pending data
    is local only and preserves the cache.

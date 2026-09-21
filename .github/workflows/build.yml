@@ -31,27 +31,20 @@ jobs:
       - name: Publish Windows x64
         run: dotnet publish src/CamledianDrive/CamledianDrive.csproj --configuration Release --runtime win-x64 --self-contained false --output artifacts/win-x64
 
-      - name: Bundle rclone
-        shell: pwsh
-        run: |
-          $zip = Join-Path $env:RUNNER_TEMP 'rclone.zip'
-          $extract = Join-Path $env:RUNNER_TEMP 'rclone'
-          Invoke-WebRequest 'https://downloads.rclone.org/rclone-current-windows-amd64.zip' -OutFile $zip
-          Expand-Archive $zip -DestinationPath $extract -Force
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
+          cache: false
 
-          $rclone = Get-ChildItem $extract -Recurse -Filter 'rclone.exe' | Select-Object -First 1
-          if (-not $rclone) { throw 'rclone.exe nebyl ve staženém archivu nalezen.' }
-
-          New-Item 'artifacts/win-x64/tools' -ItemType Directory -Force | Out-Null
-          Copy-Item $rclone.FullName 'artifacts/win-x64/tools/rclone.exe'
-
-          $copying = Get-ChildItem $extract -Recurse -Filter 'COPYING' | Select-Object -First 1
-          if ($copying) {
-            Copy-Item $copying.FullName 'artifacts/win-x64/tools/rclone-LICENSE.txt'
-          }
+      - name: Build guarded rclone
+        run: python scripts/build-rclone.py
 
       - name: Test real rclone writeback
         run: python tests/rclone-writeback-smoke.py artifacts/win-x64/tools/rclone.exe
+
+      - name: Test VFS write permissions with full cache
+        run: python tests/rclone-writeback-smoke.py artifacts/win-x64/tools/rclone.exe --guard
 
       - name: Bundle WinFsp installer
         shell: pwsh
@@ -68,6 +61,16 @@ jobs:
           Invoke-WebRequest $asset.browser_download_url -OutFile 'artifacts/win-x64/dependencies/winfsp.msi'
           Invoke-WebRequest 'https://raw.githubusercontent.com/winfsp/winfsp/master/License.txt' -OutFile 'artifacts/win-x64/dependencies/WinFsp-LICENSE.txt'
           $release.tag_name | Out-File 'artifacts/win-x64/dependencies/WinFsp-version.txt' -Encoding utf8
+
+      - name: Install WinFsp for actual mount test
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path artifacts/win-x64/dependencies/winfsp.msi).Path
+          $install = Start-Process msiexec.exe -ArgumentList @('/i', "`"$msi`"", '/qn', '/norestart') -Wait -PassThru
+          if ($install.ExitCode -notin @(0, 3010)) { throw "WinFsp install failed: $($install.ExitCode)" }
+
+      - name: Test Windows drive create and editor save
+        run: python tests/rclone-writeback-smoke.py artifacts/win-x64/tools/rclone.exe --guard --mount
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

@@ -1,0 +1,288 @@
+diff --git a/backend/webdav/webdav.go b/backend/webdav/webdav.go
+index 7479e93..5ae07bd 100644
+--- a/backend/webdav/webdav.go
++++ b/backend/webdav/webdav.go
+@@ -72,6 +72,11 @@ func init() {
+ 		Description: "WebDAV",
+ 		NewFs:       NewFs,
+ 		Options: []fs.Option{{
++			Name:     "vfs_write_guard",
++			Help:     "Require server DAV:isreadonly permission before creating or writing VFS cache entries.",
++			Default:  false,
++			Advanced: true,
++		}, {
+ 			Name:     "url",
+ 			Help:     "URL of http host to connect to.\n\nE.g. https://example.com.",
+ 			Required: true,
+@@ -193,6 +198,7 @@ which rclone otherwise refuses to do.
+ 
+ // Options defines the configuration for this backend
+ type Options struct {
++	VFSWriteGuard      bool                 `config:"vfs_write_guard"`
+ 	URL                string               `config:"url"`
+ 	Vendor             string               `config:"vendor"`
+ 	User               string               `config:"user"`
+@@ -211,6 +217,8 @@ type Options struct {
+ 
+ // Fs represents a remote webdav
+ type Fs struct {
++	writeGuardMu       sync.Mutex
++	writeGuard         map[string]writeGuardResult
+ 	name               string        // name of this remote
+ 	root               string        // the path we are working on
+ 	opt                Options       // parsed options
+diff --git a/backend/webdav/write_guard.go b/backend/webdav/write_guard.go
+new file mode 100644
+index 0000000..0e724d3
+--- /dev/null
++++ b/backend/webdav/write_guard.go
+@@ -0,0 +1,100 @@
++package webdav
++
++import (
++	"context"
++	"encoding/xml"
++	"net/http"
++	"net/url"
++	"os"
++	"strings"
++	"time"
++
++	"github.com/rclone/rclone/lib/rest"
++)
++
++type writeGuardResult struct {
++	allowed bool
++	expires time.Time
++}
++
++type writeGuardResponse struct {
++	XMLName   xml.Name `xml:"DAV: multistatus"`
++	Responses []struct {
++		Href  string `xml:"DAV: href"`
++		Props []struct {
++			Status string `xml:"DAV: status"`
++			Prop   struct {
++				ReadOnly     *string `xml:"DAV: isreadonly"`
++				ResourceType struct {
++					Collection *struct{} `xml:"DAV: collection"`
++				} `xml:"DAV: resourcetype"`
++			} `xml:"DAV: prop"`
++		} `xml:"DAV: propstat"`
++	} `xml:"DAV: response"`
++}
++
++// CheckVFSWrite is enabled only by the Camledian build/launcher. No uploaded
++// probe or hardcoded business paths: the authenticated server advertises rights.
++func (f *Fs) CheckVFSWrite(ctx context.Context, directory string) error {
++	if !f.opt.VFSWriteGuard {
++		return nil
++	}
++	f.writeGuardMu.Lock()
++	cached, found := f.writeGuard[directory]
++	f.writeGuardMu.Unlock()
++	if found && time.Now().Before(cached.expires) {
++		if cached.allowed {
++			return nil
++		}
++		return os.ErrPermission
++	}
++	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
++	defer cancel()
++	opts := rest.Opts{
++		Method:        "PROPFIND",
++		Path:          f.dirPath(directory),
++		Body:          strings.NewReader(`<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:isreadonly/></d:prop></d:propfind>`),
++		ContentType:   "application/xml; charset=utf-8",
++		ExtraHeaders:  map[string]string{"Depth": "0"},
++		CheckRedirect: rest.PreserveMethodRedirectFn,
++	}
++	var result writeGuardResponse
++	resp, err := f.srv.CallXML(ctx, &opts, nil, &result)
++	if err != nil || resp.StatusCode != http.StatusMultiStatus {
++		// No stale permissions on network failure, no inferred writable default.
++		return os.ErrPermission
++	}
++	wanted, err := url.Parse(f.endpointURL + f.dirPath(directory))
++	if err != nil {
++		return os.ErrPermission
++	}
++	allowed := false
++	for _, response := range result.Responses {
++		href, err := url.Parse(response.Href)
++		if err != nil {
++			continue
++		}
++		resolved := wanted.ResolveReference(href)
++		if resolved.Scheme != wanted.Scheme || resolved.Host != wanted.Host ||
++			strings.TrimRight(resolved.Path, "/") != strings.TrimRight(wanted.Path, "/") {
++			continue
++		}
++		for _, prop := range response.Props {
++			status := strings.Fields(prop.Status)
++			if len(status) < 2 || status[1] != "200" || prop.Prop.ResourceType.Collection == nil || prop.Prop.ReadOnly == nil {
++				continue
++			}
++			allowed = strings.TrimSpace(*prop.Prop.ReadOnly) == "0"
++		}
++	}
++	f.writeGuardMu.Lock()
++	if len(f.writeGuard) >= 512 || f.writeGuard == nil {
++		f.writeGuard = make(map[string]writeGuardResult)
++	}
++	f.writeGuard[directory] = writeGuardResult{allowed, time.Now().Add(5 * time.Second)}
++	f.writeGuardMu.Unlock()
++	if !allowed {
++		return os.ErrPermission
++	}
++	return nil
++}
+diff --git a/backend/webdav/write_guard_test.go b/backend/webdav/write_guard_test.go
+new file mode 100644
+index 0000000..b35b9da
+--- /dev/null
++++ b/backend/webdav/write_guard_test.go
+@@ -0,0 +1,79 @@
++package webdav
++
++import (
++	"context"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/rclone/rclone/lib/rest"
++)
++
++func TestVFSWriteGuard(t *testing.T) {
++	for _, tc := range []struct {
++		name, prop, status, href string
++		want                     bool
++	}{
++		{"writable", "<d:isreadonly>0</d:isreadonly>", "200 OK", "/webdav/Intern%C3%AD/", true},
++		{"readonly", "<d:isreadonly>1</d:isreadonly>", "200 OK", "/webdav/Intern%C3%AD/", false},
++		{"missing", "", "200 OK", "/webdav/Intern%C3%AD/", false},
++		{"unknown", "<d:isreadonly>false</d:isreadonly>", "200 OK", "/webdav/Intern%C3%AD/", false},
++		{"wrong-status", "<d:isreadonly>0</d:isreadonly>", "403 Forbidden", "/webdav/Intern%C3%AD/", false},
++		{"wrong-path", "<d:isreadonly>0</d:isreadonly>", "200 OK", "/webdav/other/", false},
++		{"wrong-host", "<d:isreadonly>0</d:isreadonly>", "200 OK", "https://example.test/webdav/Intern%C3%AD/", false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			calls := 0
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				calls++
++				user, pass, _ := r.BasicAuth()
++				if r.Method != "PROPFIND" || r.Header.Get("Depth") != "0" || user != "user" || pass != "secret" {
++					t.Error("unauthenticated or incorrect preflight")
++				}
++				w.Header().Set("Content-Type", "application/xml")
++				w.WriteHeader(207)
++				fmt.Fprintf(w, `<d:multistatus xmlns:d="DAV:"><d:response><d:href>%s</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype>%s</d:prop><d:status>HTTP/1.1 %s</d:status></d:propstat></d:response></d:multistatus>`, tc.href, tc.prop, tc.status)
++			}))
++			defer server.Close()
++			f := &Fs{opt: Options{VFSWriteGuard: true}, endpointURL: server.URL + "/webdav/",
++				srv: rest.NewClient(server.Client()).SetRoot(server.URL+"/webdav/").SetUserPass("user", "secret")}
++			for range 2 {
++				if allowed := f.CheckVFSWrite(context.Background(), "Interní") == nil; allowed != tc.want {
++					t.Errorf("allowed=%v, want %v", allowed, tc.want)
++				}
++			}
++			if calls != 1 {
++				t.Errorf("short permission cache failed: calls=%d", calls)
++			}
++			f.writeGuard["Interní"] = writeGuardResult{tc.want, time.Now().Add(-time.Second)}
++			server.Close()
++			if f.CheckVFSWrite(context.Background(), "Interní") == nil {
++				t.Error("stale permission on network failure")
++			}
++		})
++	}
++}
++
++func TestVFSWriteGuardDisabled(t *testing.T) {
++	f := &Fs{}
++	if f.CheckVFSWrite(context.Background(), "anything") != nil {
++		t.Fatal("ordinary rclone changed")
++	}
++}
++
++func TestVFSWriteGuardBadResponses(t *testing.T) {
++	for _, body := range []string{"invalid xml", `<d:multistatus xmlns:d="DAV:"/>`, `<x/>`} {
++		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			w.WriteHeader(207)
++			fmt.Fprint(w, body)
++		}))
++		f := &Fs{opt: Options{VFSWriteGuard: true}, endpointURL: server.URL + "/", srv: rest.NewClient(server.Client()).SetRoot(server.URL + "/")}
++		if f.CheckVFSWrite(context.Background(), strings.TrimSpace("dir")) == nil {
++			t.Error("malformed response accepted")
++		}
++		server.Close()
++	}
++}
+diff --git a/vfs/dir.go b/vfs/dir.go
+index 0d24195..baac391 100644
+--- a/vfs/dir.go
++++ b/vfs/dir.go
+@@ -1023,6 +1023,9 @@ func (d *Dir) Open(flags int) (fd Handle, err error) {
+ 
+ // Create makes a new file node
+ func (d *Dir) Create(name string, flags int) (*File, error) {
++	if err := d.vfs.checkWriteAccess(d.Path()); err != nil {
++		return nil, err
++	}
+ 	// fs.Debugf(path, "Dir.Create")
+ 	// Return existing node if one exists
+ 	node, err := d.stat(name)
+@@ -1166,6 +1169,9 @@ func (d *Dir) RemoveName(name string) error {
+ 
+ // Rename the file
+ func (d *Dir) Rename(oldName, newName string, destDir *Dir) error {
++	if err := d.vfs.checkWriteAccess(destDir.Path()); err != nil {
++		return err
++	}
+ 	// fs.Debugf(d, "BEFORE\n%s", d.dump())
+ 	if d.vfs.Opt.ReadOnly {
+ 		return EROFS
+diff --git a/vfs/file.go b/vfs/file.go
+index 69a7afc..f7950c6 100644
+--- a/vfs/file.go
++++ b/vfs/file.go
+@@ -882,6 +882,11 @@ func (f *File) Open(flags int) (fd Handle, err error) {
+ 	f.mu.RLock()
+ 	d := f.d
+ 	f.mu.RUnlock()
++	if write {
++		if err := d.vfs.checkWriteAccess(d.Path()); err != nil {
++			return nil, err
++		}
++	}
+ 	CacheMode := d.vfs.Opt.CacheMode
+ 	if CacheMode >= vfscommon.CacheModeMinimal && (d.vfs.cache.InUse(f.CachePath()) || d.vfs.cache.Exists(f.CachePath())) {
+ 		fd, err = f.openRW(flags)
+diff --git a/vfs/write_guard.go b/vfs/write_guard.go
+new file mode 100644
+index 0000000..ca676e0
+--- /dev/null
++++ b/vfs/write_guard.go
+@@ -0,0 +1,18 @@
++package vfs
++
++import "context"
++
++// Optional backend preflight, before a write changes local VFS/cache state.
++// Remote enforcement remains authoritative; later failures still use writeback.
++type writeAccessChecker interface {
++	CheckVFSWrite(context.Context, string) error
++}
++
++func (vfs *VFS) checkWriteAccess(directory string) error {
++	if checker, ok := vfs.f.(writeAccessChecker); ok {
++		if err := checker.CheckVFSWrite(vfs.ctx, directory); err != nil {
++			return EPERM
++		}
++	}
++	return nil
++}

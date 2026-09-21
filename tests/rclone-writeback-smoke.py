@@ -16,8 +16,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import argparse
 from xml.sax.saxutils import escape
 
+parser = argparse.ArgumentParser()
+parser.add_argument("rclone")
+parser.add_argument("--guard", action="store_true")
+parser.add_argument("--mount", action="store_true")
+args = parser.parse_args()
+if args.mount and (os.name != "nt" or not args.guard):
+    raise SystemExit("--mount requires Windows and --guard")
 stored = {}
 directories = ["/", "/Zakazky/", "/Zakazky/ABCDEF-123456/", "/Zakazky/ABCDEF-123456/Interni/"]
 
@@ -47,7 +55,7 @@ class Backend(http.server.BaseHTTPRequestHandler):
             directory = child in directories
             resource = "<d:collection/>" if directory else ""
             items.append(f"""<d:response><d:href>{escape(child)}</d:href><d:propstat><d:prop>
-<d:resourcetype>{resource}</d:resourcetype><d:getcontentlength>{len(stored.get(child, b''))}</d:getcontentlength>
+<d:resourcetype>{resource}</d:resourcetype><d:isreadonly>{0 if "/Interni/" in child else 1}</d:isreadonly><d:getcontentlength>{len(stored.get(child, b''))}</d:getcontentlength>
 <d:getlastmodified>Mon, 21 Sep 2026 10:00:00 GMT</d:getlastmodified>
 </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>""")
         self.reply(207, ('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">' + "".join(items)
@@ -58,6 +66,15 @@ class Backend(http.server.BaseHTTPRequestHandler):
         if "/Interni/" not in self.path:
             return self.reply(403, b"Use Interni")
         stored[self.path] = data
+        self.reply(201)
+
+    def do_MOVE(self):
+        destination = urllib.parse.urlparse(self.headers.get("Destination", "")).path
+        if "/Interni/" not in destination:
+            return self.reply(403)
+        if self.path not in stored:
+            return self.reply(404)
+        stored[destination] = stored.pop(self.path)
         self.reply(201)
 
     def do_MKCOL(self):
@@ -109,25 +126,87 @@ try:
             return json.loads(request(rc_port, "/" + method, "POST", b"{}",
                                      {"Authorization": auth, "Content-Type": "application/json"})[1])
         with open(Path(tmp) / "rclone.log", "w+") as log:
-            process = subprocess.Popen([sys.argv[1], "serve", "webdav", ":webdav:",
-                "--addr", f"127.0.0.1:{serve_port}", "--rc", "--rc-addr", f"127.0.0.1:{rc_port}",
-                "--vfs-cache-mode", "full", "--vfs-write-back", "100ms", "--cache-dir", tmp,
-                "--config", str(Path(tmp) / "unused.conf")], env=env, stdout=log, stderr=log)
+            drive = next((f"{chr(c)}:" for c in range(ord('Z'), ord('D')-1, -1)
+                          if not Path(f"{chr(c)}:/").exists()), None) if args.mount else None
+            if args.mount and not drive:
+                raise RuntimeError("No free test drive letter")
+            command = ([args.rclone, "mount", ":webdav:", drive, "--network-mode"] if args.mount else
+                       [args.rclone, "serve", "webdav", ":webdav:", "--addr", f"127.0.0.1:{serve_port}"])
+            command += ["--rc", "--rc-addr", f"127.0.0.1:{rc_port}",
+                "--vfs-cache-mode", "full", "--vfs-write-back", "500ms", "--cache-dir", tmp,
+                "--config", str(Path(tmp) / "unused.conf")]
+            if args.guard:
+                command += ["--webdav-vfs-write-guard"]
+            process = subprocess.Popen(command, env=env, stdout=log, stderr=log)
             try:
                 wait_for(lambda: rc("vfs/stats"), "RC startup failed")
                 root = "/Zakazky/ABCDEF-123456/"
-                status, _ = request(serve_port, root + "rejected.txt", "PUT", b"local-only")
-                assert status in (200, 201, 204), "Local VFS should initially accept cached write"
-                queue = wait_for(lambda: [i for i in rc("vfs/queue").get("queue", [])
-                    if i["tries"] > 0 and not i["uploading"]], "Expected failed upload in real queue")
-                assert queue[0]["name"] == "Zakazky/ABCDEF-123456/rejected.txt"
-                assert root + "rejected.txt" not in stored, "Rejected data reached backend"
-                # Delete only this disposable failed test copy; production app never purges cache.
-                request(serve_port, root + "rejected.txt", "DELETE")
-                request(serve_port, root + "Interni/accepted.txt", "PUT", b"server-confirmed")
-                wait_for(lambda: stored.get(root + "Interni/accepted.txt") == b"server-confirmed", "Valid upload did not finish")
-                wait_for(lambda: not rc("vfs/queue")["queue"], "Queue did not clear")
-                print("PASS: cached copy succeeds locally, backend rejects with 403, RC exposes retry, valid upload drains queue.")
+                if args.guard:
+                    if args.mount:
+                        wait_for(lambda: Path(drive + "/Zakazky/ABCDEF-123456/Interni").is_dir(), "Mount not ready")
+                    def put(path, data):
+                        if args.mount:
+                            Path(drive + path).write_bytes(data)
+                        else:
+                            request(serve_port, path, "PUT", data)
+                    def move(source, target):
+                        if args.mount:
+                            os.rename(drive + source, drive + target)
+                        else:
+                            request(serve_port, source, "MOVE", headers={"Destination":f"http://127.0.0.1:{serve_port}{target}"})
+                    def listing():
+                        if args.mount:
+                            return " ".join(p.name for p in Path(drive + root).iterdir())
+                        return request(serve_port, root, "PROPFIND", headers={"Depth":"1"})[1].decode()
+                    def denied(fn):
+                        try:
+                            fn()
+                        except PermissionError:
+                            return
+                        except urllib.error.HTTPError as error:
+                            # rclone serve webdav maps a failed Create to 404; the WinFsp test
+                            # below exercises the real OS permission error instead.
+                            assert error.code in (403,404,405), error.code
+                            return
+                        raise AssertionError("Write unexpectedly accepted")
+                    denied(lambda: put(root + "rejected.txt", b"must-not-enter-cache"))
+                    assert "rejected.txt" not in listing(), "Phantom file in VFS directory"
+                    assert not rc("vfs/queue")["queue"], "Denied file entered upload queue"
+                    put(root + "Interni/accepted.txt", b"server-confirmed")
+                    wait_for(lambda: stored.get(root + "Interni/accepted.txt") == b"server-confirmed", "Allowed upload failed")
+                    if args.mount:
+                        # An actual editor-style seek/read/write operation through WinFsp.
+                        with open(drive + root + "Interni/accepted.txt", "r+b") as file:
+                            assert file.read(6) == b"server"
+                            file.seek(7)
+                            file.write(b"EDITED!!!")
+                    else:
+                        put(root + "Interni/accepted.txt", b"server-EDITED!!!")
+                    wait_for(lambda: stored.get(root + "Interni/accepted.txt") == b"server-EDITED!!!", "Editor overwrite failed")
+                    put(root + "Interni/pending.txt", b"keep-this-source")
+                    denied(lambda: move(root + "Interni/pending.txt", root + "moved.txt"))
+                    assert "moved.txt" not in listing(), "Rename created phantom destination"
+                    if args.mount:
+                        assert Path(drive + root + "Interni/pending.txt").read_bytes() == b"keep-this-source"
+                    else:
+                        assert request(serve_port, root + "Interni/pending.txt")[1] == b"keep-this-source"
+                    move(root + "Interni/pending.txt", root + "Interni/renamed.txt")
+                    wait_for(lambda: stored.get(root + "Interni/renamed.txt") == b"keep-this-source", "Allowed rename failed")
+                    wait_for(lambda: not rc("vfs/queue")["queue"], "Queue did not drain")
+                    print("PASS: denied create/rename leave no phantom; full-cache upload, editor overwrite and allowed rename work.")
+                else:
+                    status, _ = request(serve_port, root + "rejected.txt", "PUT", b"local-only")
+                    assert status in (200, 201, 204), "Local VFS should initially accept cached write"
+                    queue = wait_for(lambda: [i for i in rc("vfs/queue").get("queue", [])
+                        if i["tries"] > 0 and not i["uploading"]], "Expected failed upload in real queue")
+                    assert queue[0]["name"] == "Zakazky/ABCDEF-123456/rejected.txt"
+                    assert root + "rejected.txt" not in stored, "Rejected data reached backend"
+                    # Delete only this disposable failed test copy; production app never purges cache.
+                    request(serve_port, root + "rejected.txt", "DELETE")
+                    request(serve_port, root + "Interni/accepted.txt", "PUT", b"server-confirmed")
+                    wait_for(lambda: stored.get(root + "Interni/accepted.txt") == b"server-confirmed", "Valid upload did not finish")
+                    wait_for(lambda: not rc("vfs/queue")["queue"], "Queue did not clear")
+                    print("PASS: cached copy succeeds locally, backend rejects with 403, RC exposes retry, valid upload drains queue.")
             except BaseException:
                 log.flush()
                 log.seek(0)

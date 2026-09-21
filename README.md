@@ -10,7 +10,7 @@ Default WebDAV endpoint: `https://admin.camledian.art/webdav/`
 - framework-dependent build for fast development and testing
 - asks only for the WebDAV username and password
 - mounts Commander as `X:` through the bundled rclone + WinFsp
-- GitHub Actions downloads and bundles the current official Windows x64 rclone build
+- GitHub Actions builds a pinned rclone version with a small opt-in permission preflight patch (see `vendor/rclone/README.md`)
 - GitHub Actions also bundles the current official WinFsp MSI installer
 - when WinFsp is missing, Camledian Drive offers to install the bundled MSI with UAC elevation
 - GitHub Actions also builds a Windows installer (Inno Setup) that installs WinFsp and, if missing, the .NET Desktop Runtime, so a plain double-click setup is enough
@@ -18,6 +18,7 @@ Default WebDAV endpoint: `https://admin.camledian.art/webdav/`
 - sends the plaintext password to `rclone obscure -` through STDIN rather than a process argument
 - passes only the obscured password to the long-running mount process
 - uses full VFS cache for normal Windows file operations
+- rejects writes into read-only folders before a new file enters the local cache; editor saves in writable folders keep using full caching
 - opens the mounted drive in File Explorer after a successful mount
 - shows queued uploads and failed transfers in the window and Windows tray notifications
 - polls rclone's authenticated loopback control interface, including after app restart

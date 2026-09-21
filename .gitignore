@@ -9,3 +9,5 @@ packages/
 *.snk
 *.key
 *.cer
+
+__pycache__/

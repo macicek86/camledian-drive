@@ -64,6 +64,8 @@ public sealed class RcloneMountService : IMountService
         psi.ArgumentList.Add("--network-mode");
         psi.ArgumentList.Add("--volname");
         psi.ArgumentList.Add("Camledian Drive");
+        // Require server-advertised permissions before anything enters VFS cache.
+        psi.ArgumentList.Add("--webdav-vfs-write-guard");
         psi.ArgumentList.Add("--vfs-cache-mode");
         psi.ArgumentList.Add("full");
         psi.ArgumentList.Add("--vfs-cache-max-size");

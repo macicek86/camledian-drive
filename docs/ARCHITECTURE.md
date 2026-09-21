@@ -10,8 +10,7 @@ quotas, and server-side behavior belong to Commander.
 
 ### Desktop app
 
-Recommended stack: C# / .NET 8 with a native Windows UI. The first implementation
-can use WPF for a small dependency footprint and mature Windows integration.
+Current stack: C# / .NET 10 with WPF and a WinForms tray icon.
 
 Responsibilities:
 
@@ -81,3 +80,5 @@ The app should recover from:
 
 Reconnect should use bounded exponential backoff and surface a useful status to
 the user instead of repeatedly showing modal error dialogs.
+
+Transfer monitoring and disconnect semantics are documented in [TRANSFER-MONITORING.md](TRANSFER-MONITORING.md).

@@ -19,6 +19,9 @@ Default WebDAV endpoint: `https://admin.camledian.art/webdav/`
 - passes only the obscured password to the long-running mount process
 - uses full VFS cache for normal Windows file operations
 - opens the mounted drive in File Explorer after a successful mount
+- shows queued uploads and failed transfers in the window and Windows tray notifications
+- polls rclone's authenticated loopback control interface, including after app restart
+- checks outstanding transfers before disconnecting; interrupting pending or unknown uploads requires explicit confirmation
 - can disconnect the mount from the UI
 
 > This is an early prototype. Self-contained publishing and code signing are
@@ -54,3 +57,13 @@ The packaged development artifact contains rclone and WinFsp. Their upstream lic
 Source code is MIT licensed. See [`LICENSE`](LICENSE).
 
 The Camledian name, logo and visual identity are not granted under the MIT source-code license. See [`TRADEMARKS.md`](TRADEMARKS.md).
+
+## Transfer verification
+
+```sh
+dotnet run --project tests/CamledianDrive.TransferTests -c Release
+```
+
+The transfer tests run on Linux and Windows without WinFsp. Windows build CI runs
+these tests before building the application and installer. Manual Windows QA is
+still required; see [transfer monitoring](docs/TRANSFER-MONITORING.md).

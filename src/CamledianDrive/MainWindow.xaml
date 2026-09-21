@@ -137,6 +137,10 @@
                                    TextAlignment="Center"
                                    Foreground="{StaticResource GoldBrush}" />
                     </Border>
+                    <TextBlock x:Name="TransferStatusText"
+                               Margin="0,12,0,0"
+                               TextWrapping="Wrap"
+                               Foreground="{StaticResource GoldBrush}" />
                 </StackPanel>
             </Border>
 

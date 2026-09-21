@@ -84,6 +84,9 @@ public sealed class RcloneMountService : IMountService
         psi.Environment["RCLONE_WEBDAV_USER"] = username;
         psi.Environment["RCLONE_WEBDAV_PASS"] = obscuredPassword;
 
+        var control = RcloneControlSession.Create();
+        control.Configure(psi);
+
         var process = new Process
         {
             StartInfo = psi,
@@ -116,6 +119,7 @@ public sealed class RcloneMountService : IMountService
 
         try
         {
+            control.Save(process);
             await WaitForMountAsync(process, driveRoot, cancellationToken);
         }
         catch
@@ -136,7 +140,7 @@ public sealed class RcloneMountService : IMountService
         }
     }
 
-    public async Task UnmountAsync(CancellationToken cancellationToken = default)
+    public async Task UnmountAsync(CancellationToken cancellationToken = default, bool force = false)
     {
         var process = GetAttachedLiveProcess();
 
@@ -156,6 +160,13 @@ public sealed class RcloneMountService : IMountService
             }
 
             return;
+        }
+
+        if (!force)
+        {
+            var status = await GetTransferStatusAsync(cancellationToken);
+            if (!status.CanDisconnect)
+                throw new PendingTransfersException(status.Message);
         }
 
         string driveLetter;
@@ -192,6 +203,14 @@ public sealed class RcloneMountService : IMountService
 
         if (Directory.Exists(driveRoot))
             throw new InvalidOperationException($"Rclone byl ukončen, ale disk {driveLetter}: je ve Windows stále viditelný. Zkus chvíli počkat nebo restartovat Průzkumníka.");
+    }
+
+    public async Task<TransferStatus> GetTransferStatusAsync(CancellationToken cancellationToken = default)
+    {
+        var process = GetAttachedLiveProcess();
+        if (process is null) return TransferStatus.Unknown;
+        var control = RcloneControlSession.Load(process);
+        return control is null ? TransferStatus.Unknown : await control.ReadAsync(cancellationToken);
     }
 
     public Task<bool> IsMountedAsync(CancellationToken cancellationToken = default)

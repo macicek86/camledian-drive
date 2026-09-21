@@ -13,7 +13,7 @@ public static class CredentialService
     private const uint CredPersistLocalMachine = 2;
     private const int ErrorNotFound = 1168;
 
-    public static void Save(string username, string password)
+    public static void Save(string username, string password, string targetName = TargetName)
     {
         var passwordBytes = Encoding.Unicode.GetBytes(password);
         var passwordPtr = IntPtr.Zero;
@@ -26,7 +26,7 @@ public static class CredentialService
             var credential = new NativeCredential
             {
                 Type = CredTypeGeneric,
-                TargetName = TargetName,
+                TargetName = targetName,
                 CredentialBlobSize = (uint)passwordBytes.Length,
                 CredentialBlob = passwordPtr,
                 Persist = CredPersistLocalMachine,
@@ -44,9 +44,9 @@ public static class CredentialService
         }
     }
 
-    public static StoredCredential? Load()
+    public static StoredCredential? Load(string targetName = TargetName)
     {
-        if (!CredReadW(TargetName, CredTypeGeneric, 0, out var credentialPtr))
+        if (!CredReadW(targetName, CredTypeGeneric, 0, out var credentialPtr))
         {
             var error = Marshal.GetLastWin32Error();
             if (error == ErrorNotFound) return null;

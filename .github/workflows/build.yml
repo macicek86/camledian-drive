@@ -22,6 +22,9 @@ jobs:
       - name: Restore
         run: dotnet restore src/CamledianDrive/CamledianDrive.csproj
 
+      - name: Test transfer monitoring
+        run: dotnet run --project tests/CamledianDrive.TransferTests --configuration Release
+
       - name: Build
         run: dotnet build src/CamledianDrive/CamledianDrive.csproj --configuration Release --no-restore
 
@@ -46,6 +49,9 @@ jobs:
           if ($copying) {
             Copy-Item $copying.FullName 'artifacts/win-x64/tools/rclone-LICENSE.txt'
           }
+
+      - name: Test real rclone writeback
+        run: python tests/rclone-writeback-smoke.py artifacts/win-x64/tools/rclone.exe
 
       - name: Bundle WinFsp installer
         shell: pwsh

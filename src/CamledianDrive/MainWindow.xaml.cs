@@ -22,6 +22,8 @@ public partial class MainWindow : Window
     private bool _isBusy;
     private bool _shownTrayHint;
     private bool? _lastMounted;
+    private bool _refreshing;
+    private string? _transferNotification;
 
     public MainWindow()
     {
@@ -77,8 +79,10 @@ public partial class MainWindow : Window
 
     private async void StateTimer_Tick(object? sender, EventArgs e)
     {
-        if (_isBusy) return;
-        await RefreshMountStateAsync();
+        if (_isBusy || _refreshing) return;
+        _refreshing = true;
+        try { await RefreshMountStateAsync(); }
+        finally { _refreshing = false; }
     }
 
     private async void ConnectButton_Click(object sender, RoutedEventArgs e)
@@ -184,7 +188,7 @@ public partial class MainWindow : Window
 
         try
         {
-            await _mountService.UnmountAsync();
+            if (!await TryUnmountAsync()) return;
             StatusText.Text = "Nepřipojeno";
             SetMountedState(false);
         }
@@ -196,6 +200,30 @@ public partial class MainWindow : Window
         finally
         {
             SetBusy(false);
+        }
+    }
+
+    private async Task<bool> TryUnmountAsync()
+    {
+        try
+        {
+            await _mountService.UnmountAsync();
+            return true;
+        }
+        catch (PendingTransfersException ex)
+        {
+            TransferStatusText.Text = ex.Message;
+            StatusText.Text = "Disk zůstává připojený.";
+            ShowFromTray();
+            var answer = System.Windows.MessageBox.Show(
+                ex.Message + "\n\nDoporučujeme ponechat disk připojený a nejdřív dokončit nahrávání. "
+                + "Před odpojením také zavřete soubory otevřené v jiných aplikacích.\n\n"
+                + "Přesto odpojit? Neodeslané změny zůstanou pouze v místním úložišti a nejsou zálohované na serveru.",
+                "Camledian Drive – nahrávání není dokončené",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes) return false;
+            await _mountService.UnmountAsync(force: true);
+            return true;
         }
     }
 
@@ -237,6 +265,30 @@ public partial class MainWindow : Window
                 ? $"Připojeno jako Camledian Drive ({DriveLetterOrFallback()})"
                 : "Nepřipojeno";
         }
+        if (!mounted)
+        {
+            TransferStatusText.Text = "";
+            _transferNotification = null;
+            return;
+        }
+        var transfers = await _mountService.GetTransferStatusAsync();
+        // A disconnect may have started while the control request was in flight.
+        if (_isBusy || _lastMounted != true) return;
+        TransferStatusText.Text = transfers.Message;
+        if (transfers.NeedsAttention)
+        {
+            if (_trayIcon is not null) _trayIcon.Text = "Camledian Drive – zkontrolujte nahrávání";
+            if (_transferNotification != transfers.NotificationKey)
+            {
+                _transferNotification = transfers.NotificationKey;
+                _trayIcon?.ShowBalloonTip(8000, "Camledian Drive – zkontrolujte nahrávání",
+                    transfers.Message, WinForms.ToolTipIcon.Warning);
+            }
+        }
+        else if (transfers.Pending == 0)
+        {
+            _transferNotification = null;
+        }
     }
 
     private string DriveLetterOrFallback() => _mountService.CurrentDriveLetter ?? "X:";
@@ -263,6 +315,11 @@ public partial class MainWindow : Window
     private void SetMountedState(bool mounted)
     {
         _lastMounted = mounted;
+        if (!mounted)
+        {
+            TransferStatusText.Text = "";
+            _transferNotification = null;
+        }
         UpdateControls();
         UpdateTrayState(mounted);
     }
@@ -321,6 +378,7 @@ public partial class MainWindow : Window
             ContextMenuStrip = menu
         };
         _trayIcon.DoubleClick += (_, _) => ShowFromTray();
+        _trayIcon.BalloonTipClicked += (_, _) => ShowFromTray();
     }
 
     private static Drawing.Icon LoadTrayIcon()
@@ -420,8 +478,11 @@ public partial class MainWindow : Window
         SetBusy(true);
         try
         {
-            if (await _mountService.IsMountedAsync())
-                await _mountService.UnmountAsync();
+            if (await _mountService.IsMountedAsync() && !await TryUnmountAsync())
+            {
+                SetBusy(false);
+                return;
+            }
         }
         catch (Exception ex)
         {
